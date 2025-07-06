@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Vehicle Proximity Alert</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+
+    #map {
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #popup {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background-color: #ff4444;
+      color: white;
+      padding: 16px 24px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      font-weight: bold;
+      font-family: sans-serif;
+      display: none;
+      z-index: 1000;
+      animation: fadein 0.4s, fadeout 0.4s 2.6s;
+    }
+
+    @keyframes fadein {
+      from { opacity: 0; transform: translateY(-10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fadeout {
+      from { opacity: 1; transform: translateY(0); }
+      to   { opacity: 0; transform: translateY(-10px); }
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="popup">⚠ Vehicle nearby!</div>
+
+<script src="https://cdn.socket.io/4.7.1/socket.io.min.js"></script>
+<script src="https://unpkg.com/leaflet"></script>
+<script src="https://unpkg.com/leaflet-rotatedmarker/leaflet.rotatedMarker.js"></script>
+
+<script>
+  // 🔄 Replace with your server IP and port
+  const socket = io('http://10.201.112.11:3000'); // <- Change to your backend
+
+  const map = L.map('map').setView([20, 78], 5);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+  const markers = {};
+  let selfMarker = null;
+  let lastSelfPos = null;
+
+  // 🔵 Your car (blue)
+  const blueCarIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/744/744465.png',
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
+    popupAnchor: [0, -20]
+  });
+
+  // 🔴 Other cars (red)
+  const redCarIcon = new L.Icon({
+    iconUrl: 'https://cdn-icons-png.flaticon.com/512/744/744467.png',
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
+    popupAnchor: [0, -20]
+  });
+
+  // 📡 Your location
+  navigator.geolocation.watchPosition(
+    pos => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+
+      // Send location to server
+      socket.emit('sendLocation', { lat, lon });
+
+      // Show/Update your marker
+      if (!selfMarker) {
+        selfMarker = L.marker([lat, lon], {
+          icon: blueCarIcon,
+          rotationAngle: 0
+        }).addTo(map).bindPopup("You");
+        map.setView([lat, lon], 15);
+      } else {
+        const angle = getRotation(lastSelfPos, [lat, lon]);
+        selfMarker.setLatLng([lat, lon]);
+        if (!isNaN(angle)) selfMarker.setRotationAngle(angle);
+      }
+
+      lastSelfPos = [lat, lon];
+    },
+    err => {
+      console.error("Geolocation error:", err);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 10000
+    }
+  );
+
+  // 🔁 Rotation for other vehicles
+  const lastPositions = {};
+
+  socket.on('locationUpdate', data => {
+    const { id, lat, lon } = data;
+    if (socket.id === id) return; // skip yourself
+
+    if (!markers[id]) {
+      markers[id] = L.marker([lat, lon], {
+        icon: redCarIcon,
+        rotationAngle: 0,
+        rotationOrigin: 'center center'
+      }).addTo(map).bindPopup(`Vehicle ${id}`);
+    } else {
+      const angle = getRotation(lastPositions[id], [lat, lon]);
+      markers[id].setLatLng([lat, lon]);
+      if (!isNaN(angle)) markers[id].setRotationAngle(angle);
+    }
+
+    lastPositions[id] = [lat, lon];
+  });
+
+  socket.on('removeMarker', id => {
+    if (markers[id]) {
+      map.removeLayer(markers[id]);
+      delete markers[id];
+      delete lastPositions[id];
+    }
+  });
+
+  socket.on('proximityAlert', ({ from, distance }) => {
+    showPopup(`🚗 Vehicle ${from} is ${distance} meters away!`);
+  });
+
+  function showPopup(message) {
+    const popup = document.getElementById('popup');
+    popup.textContent = message;
+    popup.style.display = 'block';
+    setTimeout(() => {
+      popup.style.display = 'none';
+    }, 3000);
+  }
+
+  // 📐 Compute direction angle
+  function getRotation(from, to) {
+    if (!from || !to) return 0;
+    const [lat1, lon1] = from;
+    const [lat2, lon2] = to;
+
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+    const x =
+      Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+      Math.sin(lat1 * Math.PI / 180) *
+      Math.cos(lat2 * Math.PI / 180) *
+      Math.cos(dLon);
+    const brng = Math.atan2(y, x);
+    return (brng * 180 / Math.PI + 360) % 360;
+  }
+
+  socket.on('connect', () => {
+    console.log("✅ Connected to server as:", socket.id);
+  });
+</script>
+
+</body>
+</html>
